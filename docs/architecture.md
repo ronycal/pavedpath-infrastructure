@@ -2,13 +2,19 @@
 
 ## Overview
 
-PavedPath is a GitOps-driven Internal Developer Platform designed to provide application teams with a secure, repeatable, and observable path from source code to production.
+PavedPath is a GitOps-driven Internal Developer Platform designed to provide application teams with a secure, repeatable, observable, and auditable path from source code to production.
 
-The platform separates cloud infrastructure provisioning from application delivery.
+The platform separates:
+
+- cloud infrastructure provisioning,
+- application artifact production,
+- Kubernetes application delivery.
 
 The primary architectural principle is:
 
-> Infrastructure provisioning and application deployment are separate systems with separate ownership, permissions, and deployment workflows.
+> Infrastructure provisioning, artifact production, and application deployment are separate concerns with explicit ownership, permissions, and delivery workflows.
+
+PavedPath provides shared platform capabilities while allowing application teams to consume those capabilities through a supported paved path.
 
 ---
 
@@ -16,20 +22,60 @@ The primary architectural principle is:
 
 PavedPath is designed to:
 
-- Reduce developer cognitive load.
-- Standardize application delivery.
-- Provide secure self-service deployment workflows.
-- Create repeatable AWS infrastructure.
-- Make Git the source of truth for Kubernetes desired state.
-- Provide observable and auditable deployments.
-- Reduce direct developer interaction with Kubernetes and AWS.
-- Provide a foundation for platform automation and AI-assisted engineering workflows.
+- reduce developer cognitive load,
+- standardize application delivery,
+- provide secure self-service workflows,
+- create repeatable AWS infrastructure,
+- make Git the source of truth for supported Kubernetes desired state,
+- provide observable and auditable deployments,
+- reduce direct developer interaction with Kubernetes and AWS,
+- enforce clear infrastructure and application ownership boundaries,
+- use temporary workload identities instead of long-lived cloud credentials,
+- provide a foundation for platform automation and AI-assisted engineering workflows.
 
 ---
 
 ## Repository Architecture
 
-PavedPath is divided into three repositories.
+PavedPath is divided into three repositories with explicit ownership boundaries.
+
+```text
+pavedpath-infrastructure
+        |
+        | provisions
+        v
+AWS Infrastructure
+        |
+        +---- VPC
+        +---- IAM
+        +---- ECR repositories
+        +---- EKS
+        +---- supporting AWS services
+
+
+pavedpath-sample-api
+        |
+        | builds and validates
+        v
+Application Artifact
+        |
+        | publishes
+        v
+Amazon ECR
+
+
+pavedpath-gitops
+        |
+        | declares Kubernetes desired state
+        v
+Argo CD
+        |
+        | reconciles
+        v
+Amazon EKS
+```
+
+Each repository owns a different part of the platform lifecycle.
 
 ### pavedpath-infrastructure
 
@@ -37,37 +83,34 @@ Owns foundational AWS infrastructure.
 
 Responsibilities include:
 
-- Terraform
-- Terraform state
-- AWS networking
-- Amazon EKS
-- Amazon ECR
-- IAM
-- KMS
-- GitHub OIDC integration
-- Supporting AWS infrastructure
+- Terraform configuration,
+- Terraform state configuration,
+- AWS networking,
+- Amazon EKS infrastructure,
+- Amazon ECR repositories,
+- IAM,
+- encryption infrastructure,
+- GitHub OIDC integration,
+- supporting AWS infrastructure,
+- infrastructure CI workflows.
 
-This repository does not own application deployments.
-
----
+This repository does not own normal application deployments.
 
 ### pavedpath-gitops
 
-Owns Kubernetes desired state.
+Owns supported Kubernetes desired state.
 
 Responsibilities include:
 
-- Argo CD configuration
-- Kubernetes platform services
-- Kubernetes policies
-- Namespaces
-- Application deployment manifests
-- Environment-specific deployment configuration
-- Application image versions
+- Argo CD configuration after bootstrap,
+- Kubernetes platform services,
+- supported Kubernetes policies,
+- application and platform-service Namespaces,
+- application deployment manifests,
+- environment-specific deployment configuration,
+- application image references.
 
 This repository does not provision foundational AWS infrastructure.
-
----
 
 ### pavedpath-sample-api
 
@@ -75,27 +118,31 @@ Represents an application team consuming PavedPath.
 
 Responsibilities include:
 
-- Application source code
-- Application dependencies
-- Tests
-- Dockerfile
-- CI
-- Application health endpoints
-- Container image creation
+- application source code,
+- application dependencies,
+- tests,
+- Dockerfile,
+- application CI,
+- application health endpoints,
+- container image creation,
+- application-specific validation.
 
-This repository does not provision shared infrastructure or deploy directly to Kubernetes.
+This repository does not provision shared infrastructure and does not directly deploy normal workloads to Kubernetes.
 
 ---
 
 ## Infrastructure Control Plane
 
-Infrastructure changes follow this path:
+Infrastructure changes follow a reviewed infrastructure workflow.
 
 ```text
 Platform Engineer
        |
        v
-Infrastructure Pull Request
+Infrastructure Branch
+       |
+       v
+Pull Request
        |
        v
 GitHub Actions
@@ -104,13 +151,18 @@ GitHub Actions
        |
        +---- Terraform Validate
        |
+       +---- Security / Policy Checks
+       |
        +---- Terraform Plan
        |
        v
 Review / Approval
        |
        v
-Terraform Apply
+Merge
+       |
+       v
+Approved Terraform Apply
        |
        v
 AWS
@@ -118,23 +170,28 @@ AWS
        +---- VPC
        +---- Networking
        +---- IAM
-       +---- ECR
+       +---- ECR repositories
        +---- EKS
        +---- Supporting Services
 ```
 
-Terraform owns AWS infrastructure.
+Terraform owns foundational AWS infrastructure.
 
-Terraform does not own application workloads.
+Terraform does not own normal application workloads.
+
+Infrastructure workflows authenticate to AWS through approved GitHub OIDC federation and IAM roles.
 
 ---
 
-## Application Delivery Control Plane
+## Application CI Control Plane
 
-Application delivery follows a separate path:
+Application CI validates source code and produces deployable artifacts.
 
 ```text
 Developer
+    |
+    v
+Application Branch
     |
     v
 Application Pull Request
@@ -144,20 +201,101 @@ GitHub Actions
     |
     +---- Lint
     +---- Test
-    +---- Security Scan
+    +---- Security Validation
+    +---- Build
+    +---- Image Scan
+    |
+    v
+Verified Container Image
+    |
+    v
+Amazon ECR
+```
+
+Application CI produces artifacts.
+
+Application CI does not directly deploy normal workloads to Kubernetes.
+
+Application CI receives only the AWS permissions required for approved artifact operations.
+
+---
+
+## Application Delivery Control Plane
+
+Application delivery follows a separate GitOps path.
+
+```text
+Verified Container Image
+        |
+        v
+GitOps Change
+        |
+        v
+pavedpath-gitops
+        |
+        v
+Pull Request
+        |
+        +---- Manifest Validation
+        +---- Policy Validation
+        +---- Review
+        |
+        v
+Merge
+        |
+        v
+Git Desired State
+        |
+        v
+Argo CD
+        |
+        v
+Amazon EKS
+```
+
+Application deployment intent is represented in Git.
+
+Argo CD acts as the Kubernetes delivery controller.
+
+Application CI does not act as the Kubernetes deployment controller.
+
+---
+
+## End-to-End Application Flow
+
+The supported application delivery path is:
+
+```text
+Developer
+    |
+    v
+pavedpath-sample-api
+    |
+    v
+Application CI
+    |
+    +---- Lint
+    +---- Test
+    +---- Scan
     +---- Build
     |
     v
-Container Image
+Verified Immutable Image
     |
     v
 Amazon ECR
     |
     v
-GitOps Pull Request
+GitOps Change
     |
     v
 pavedpath-gitops
+    |
+    v
+Review / Validation
+    |
+    v
+Merge
     |
     v
 Argo CD
@@ -166,47 +304,89 @@ Argo CD
 Amazon EKS
 ```
 
-Application CI creates artifacts.
-
-Application CI does not directly deploy workloads to Kubernetes.
+The three repositories participate in the delivery process without sharing ownership of the same lifecycle.
 
 ---
 
 ## GitOps Model
 
-Git represents the desired state of workloads running on Kubernetes.
+Git represents the authoritative desired state of Kubernetes resources owned by the GitOps delivery plane.
 
 The deployment model is:
 
 ```text
-Git
- |
- v
-Desired State
- |
- v
-Argo CD
- |
- v
-Kubernetes
+Git Desired State
+        |
+        v
+     Argo CD
+        |
+        | compare / reconcile
+        v
+Kubernetes Actual State
 ```
 
-Argo CD continuously compares Git desired state with Kubernetes actual state.
+Argo CD compares Git desired state with Kubernetes actual state.
 
-When differences are detected, Argo CD reconciles the cluster toward the state defined in Git.
+Depending on the synchronization policy, Argo CD may report drift, reconcile approved differences automatically, or require synchronization approval.
 
-Direct application deployment using the following commands is not part of the normal deployment path:
+Where appropriate, automated synchronization may include:
+
+- pruning,
+- self-healing,
+- drift correction.
+
+Synchronization behavior will be configured deliberately based on the lifecycle and risk of the managed resources.
+
+Direct application deployment using commands such as:
 
 ```text
 kubectl apply
 helm upgrade
 ```
 
-Administrative use of Kubernetes tooling may be required for troubleshooting or break-glass operations, but those actions do not replace Git as the source of truth.
+is not part of the normal deployment path.
+
+Administrative use of Kubernetes tooling may be required for troubleshooting or approved break-glass operations, but those actions do not replace Git as the source of truth.
+
+---
+
+## Immutable Deployment State
+
+PavedPath will prefer immutable application image references.
+
+For example:
+
+```text
+repository@sha256:<digest>
+```
+
+Application CI produces and publishes the artifact.
+
+The GitOps repository records which artifact should run.
+
+This separates:
+
+```text
+Artifact Creation
+      |
+      v
+Application CI
+
+from
+
+Deployment Intent
+      |
+      v
+GitOps
+```
+
+A deployment therefore references a specific verified artifact rather than relying solely on a mutable image tag.
 
 ---
 
 ## Infrastructure and Application Boundary
+
+The high-level ownership model is:
 
 ```text
 +-------------------------------------------------------+
@@ -223,18 +403,22 @@ Administrative use of Kubernetes tooling may be required for troubleshooting or 
 |          v                                            |
 |         AWS                                           |
 |                                                       |
-| VPC | IAM | ECR | EKS | Supporting Infrastructure    |
+| VPC | IAM | ECR Repositories | EKS | AWS Services    |
 +--------------------------+----------------------------+
                            |
-                           | provides runtime
+                           | provides platform
+                           | capabilities
                            v
 +-------------------------------------------------------+
-|               APPLICATION DELIVERY PLANE              |
+|              APPLICATION DELIVERY PLANE               |
 |                                                       |
 | pavedpath-sample-api                                  |
 |          |                                            |
 |          v                                            |
-|    GitHub Actions                                     |
+|    Application CI                                     |
+|          |                                            |
+|          v                                            |
+| Verified Container Artifact                           |
 |          |                                            |
 |          v                                            |
 |         ECR                                           |
@@ -254,71 +438,152 @@ The infrastructure layer provides capabilities.
 
 The application layer consumes those capabilities.
 
+Consumption does not transfer ownership of the underlying infrastructure.
+
+For example:
+
+- Terraform owns the ECR repository.
+- Application CI publishes images into the repository.
+- Terraform owns EKS infrastructure.
+- Argo CD reconciles supported Kubernetes resources onto EKS.
+
+---
+
+## Argo CD Bootstrap Boundary
+
+Argo CD creates a bootstrap dependency because the GitOps controller must exist before it can reconcile GitOps-managed resources.
+
+The initial sequence is:
+
+```text
+AWS Infrastructure
+       |
+       v
+Amazon EKS
+       |
+       v
+Initial Argo CD Bootstrap
+       |
+       v
+Argo CD Operational
+       |
+       v
+pavedpath-gitops
+       |
+       v
+Ongoing Kubernetes Reconciliation
+```
+
+The bootstrap mechanism may establish the minimum resources required to make Argo CD operational.
+
+Bootstrap ownership does not imply ongoing ownership.
+
+After Argo CD becomes operational, normal application and supported platform-service delivery flows through GitOps.
+
 ---
 
 ## Authentication Model
 
-Long-lived AWS access keys must not be stored in GitHub.
+Long-lived AWS access keys must not be the normal authentication mechanism for GitHub Actions.
 
-GitHub Actions will authenticate to AWS using OpenID Connect (OIDC).
+GitHub Actions will authenticate to AWS using OpenID Connect federation.
 
-The intended authentication flow is:
+The authentication flow is:
 
 ```text
 GitHub Actions
        |
-       | OIDC identity token
+       | request OIDC token
+       v
+GitHub OIDC Provider
+       |
+       | identity assertion
        v
 AWS IAM / STS
        |
-       v
-AssumeRole
-       |
+       | AssumeRoleWithWebIdentity
        v
 Temporary AWS Credentials
 ```
 
-Different workflows will receive different IAM permissions.
-
-For example:
+The expected OIDC audience for the standard AWS authentication flow is:
 
 ```text
-Terraform Plan
-      |
-      +---- Read infrastructure state
-      +---- Read AWS configuration
-
-Terraform Apply
-      |
-      +---- Modify approved infrastructure
-
-Application CI
-      |
-      +---- Push container images to ECR
+sts.amazonaws.com
 ```
 
-Application CI does not receive permissions to modify shared AWS infrastructure.
+IAM trust policies determine which GitHub workload identities may assume a role.
+
+IAM permission policies determine what an assumed role may do.
+
+These are separate authorization controls.
+
+---
+
+## Workflow Permission Separation
+
+Different workflows receive different AWS permissions.
+
+Conceptually:
+
+```text
+Infrastructure Pull Request
+        |
+        v
+Terraform Plan Authorization
+        |
+        +---- Read approved state
+        +---- Inspect approved infrastructure
+        +---- Produce plan
+
+
+Approved Infrastructure Apply
+        |
+        v
+Terraform Apply Authorization
+        |
+        +---- Modify approved infrastructure
+
+
+Application CI
+        |
+        v
+Application CI Role
+        |
+        +---- Authenticate to approved ECR
+        +---- Push approved container artifacts
+```
+
+PavedPath will target separate authorization boundaries for Terraform planning and application.
+
+Application CI does not receive permissions to administer shared AWS infrastructure.
 
 ---
 
 ## Desired Ownership Model
 
-| Resource | Owner |
+| Resource | Normal Owner |
 |---|---|
 | VPC | Terraform |
 | Subnets | Terraform |
-| EKS cluster | Terraform |
+| Route configuration | Terraform |
+| EKS infrastructure | Terraform |
 | IAM foundations | Terraform |
 | ECR repositories | Terraform |
-| GitHub AWS OIDC | Terraform |
-| Argo CD bootstrap | Infrastructure bootstrap |
+| GitHub AWS OIDC integration | Terraform |
+| Argo CD initial bootstrap | Infrastructure / bootstrap process |
+| Argo CD ongoing configuration | GitOps |
 | Kubernetes platform services | Argo CD / GitOps |
-| Kubernetes policies | Argo CD / GitOps |
+| Supported Kubernetes policies | Argo CD / GitOps |
 | Application manifests | Argo CD / GitOps |
 | Application source | Application repository |
 | Application tests | Application repository |
-| Container image | Application CI |
+| Container artifact | Application CI |
 | Application deployment version | GitOps repository |
+
+A resource should have one normal control-plane owner.
+
+Multiple automation systems must not independently manage the same resource lifecycle.
 
 ---
 
@@ -326,14 +591,64 @@ Application CI does not receive permissions to modify shared AWS infrastructure.
 
 PavedPath follows these security principles:
 
-1. No long-lived AWS credentials in GitHub.
-2. Least-privilege IAM roles.
-3. Infrastructure changes occur through reviewed Git workflows.
-4. Application deployments occur through reviewed GitOps changes.
-5. Application CI cannot modify shared infrastructure.
-6. Secrets must not be stored in plaintext in Git.
-7. Container images are scanned before promotion.
-8. Infrastructure and application permissions remain separated.
+1. No long-lived AWS credentials in GitHub as the normal authentication path.
+2. GitHub Actions uses OIDC federation and temporary AWS credentials.
+3. IAM trust relationships are scoped to approved workload identities.
+4. IAM permissions follow least privilege.
+5. Infrastructure changes occur through reviewed Git workflows.
+6. Application deployments occur through reviewed GitOps changes.
+7. Application CI cannot modify shared infrastructure.
+8. Application CI does not require normal Kubernetes deployment credentials.
+9. Secrets must not be stored in plaintext in Git.
+10. Container images are scanned before promotion.
+11. Infrastructure and application permissions remain separated.
+12. Terraform and Argo CD must not compete for ownership of the same managed resource.
+
+---
+
+## Secrets Boundary
+
+Application and platform secrets require a mechanism that preserves GitOps without storing plaintext secret values in Git.
+
+The exact secrets-management implementation will be selected during the platform-services phase.
+
+Regardless of implementation, the architecture requires that:
+
+- plaintext production secrets are not committed to Git,
+- access follows least privilege,
+- secret retrieval is auditable where supported,
+- application teams consume secrets through the supported platform mechanism.
+
+---
+
+## Observability Model
+
+PavedPath will provide visibility across both platform and application delivery.
+
+Relevant signals include:
+
+```text
+Infrastructure
+    |
+    +---- Terraform workflow status
+    +---- AWS service health
+    +---- EKS health
+
+Delivery
+    |
+    +---- GitOps change history
+    +---- Argo CD synchronization status
+    +---- Argo CD health status
+
+Application
+    |
+    +---- health endpoints
+    +---- metrics
+    +---- logs
+    +---- Kubernetes events
+```
+
+The platform should allow engineers to correlate deployment intent, reconciliation state, and runtime behavior.
 
 ---
 
@@ -341,13 +656,29 @@ PavedPath follows these security principles:
 
 PavedPath will be designed so that:
 
-- Infrastructure changes are auditable.
-- Application deployments are auditable.
-- Deployment state can be reconstructed from Git.
-- Application versions can be rolled back through Git.
-- Platform services expose metrics and logs.
-- Application workloads expose health signals.
-- Platform failures have documented runbooks.
+- infrastructure changes are auditable,
+- application deployments are auditable,
+- deployment state can be reconstructed from Git,
+- application versions can be rolled back through Git,
+- infrastructure and application ownership are identifiable during incidents,
+- platform services expose useful operational signals,
+- application workloads expose health signals,
+- platform failures have documented runbooks,
+- break-glass changes are reconciled back into the appropriate source of truth.
+
+---
+
+## Break-Glass Model
+
+Manual changes may occasionally be required during incident recovery.
+
+Break-glass actions do not transfer authoritative ownership away from the normal control plane.
+
+Infrastructure emergency changes must subsequently be reconciled with Terraform.
+
+GitOps-managed Kubernetes emergency changes must subsequently be reconciled with Git.
+
+Break-glass access must not become an alternate application deployment workflow.
 
 ---
 
@@ -370,8 +701,31 @@ without needing to manually:
 - provision AWS infrastructure,
 - configure an EKS cluster,
 - run Terraform,
-- execute kubectl deployments,
+- execute Kubernetes deployments,
 - configure shared ingress infrastructure,
-- configure shared observability infrastructure.
+- configure shared observability infrastructure,
+- manage long-lived AWS credentials.
+
+The supported path should provide:
+
+- automated validation,
+- secure artifact production,
+- immutable application artifacts,
+- reviewed deployment intent,
+- GitOps reconciliation,
+- observable runtime behavior,
+- documented operational procedures.
 
 The platform should make the secure and supported path the easiest path.
+
+---
+
+## Related Architecture Decisions
+
+The detailed architectural decisions are documented in:
+
+- ADR-001 — Separate Infrastructure Provisioning from Application Delivery
+- ADR-002 — Use GitOps and Argo CD for Kubernetes Delivery
+- ADR-003 — Use GitHub OIDC for AWS Authentication
+
+These ADRs define the ownership, delivery, authentication, and authorization boundaries summarized by this document.

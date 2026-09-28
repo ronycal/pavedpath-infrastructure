@@ -72,33 +72,125 @@ Long-lived AWS access keys will not be the normal authentication mechanism for G
 
 ---
 
+## Federation Configuration
+
+The AWS IAM OIDC provider will use:
+
+Provider URL:
+
+```text
+https://token.actions.githubusercontent.com
+```
+
+Audience:
+
+```text
+sts.amazonaws.com
+```
+
+GitHub Actions will exchange its OIDC token for temporary AWS credentials through AWS STS using `AssumeRoleWithWebIdentity`.
+
+---
+
 ## Trust Model
 
-AWS IAM role trust policies will restrict which GitHub identities may assume each role.
+AWS IAM role trust policies must restrict which GitHub identities may assume each role.
 
-Trust conditions should be scoped as narrowly as practical.
+Trust relationships will be scoped as narrowly as practical and will follow the principle of least privilege.
 
-Relevant identity information may include:
+At minimum, trust policies will validate:
 
-- GitHub organization or user
-- repository
-- branch
-- environment
-- workflow context
+- the expected OIDC audience,
+- the GitHub repository identity,
+- and the appropriate branch or GitHub environment where applicable.
 
-For example, an infrastructure role should only trust approved workflows from:
+The expected audience for the standard AWS authentication flow is:
+
+```text
+sts.amazonaws.com
+```
+
+The trust policy must evaluate the GitHub OIDC subject (`sub`) and must not grant unrestricted GitHub repository access.
+
+Relevant GitHub identity context may include:
+
+- GitHub organization or user,
+- repository identity,
+- branch,
+- environment,
+- workflow context.
+
+For example, an infrastructure role should only trust approved identities associated with:
 
 ```text
 ronycal/pavedpath-infrastructure
 ```
 
-An application CI role should only trust approved workflows from:
+An application CI role should only trust approved identities associated with:
 
 ```text
 ronycal/pavedpath-sample-api
 ```
 
 A role intended for one repository must not automatically be assumable by unrelated repositories.
+
+### Subject Claim Validation
+
+The exact GitHub OIDC subject format must be verified during implementation.
+
+PavedPath will prefer immutable repository identity claims where supported rather than relying solely on mutable repository names.
+
+Trust policies must be tested against the actual OIDC claims emitted by the PavedPath repositories before infrastructure or application workflows are enabled.
+
+The subject may vary depending on workflow context. For example, workflows using a GitHub environment may produce a different subject from workflows scoped directly to a branch.
+
+For this reason, PavedPath will not assume a subject format until the corresponding workflow and trust relationship are implemented and validated.
+
+---
+
+## Trust Policy and Permission Policy Separation
+
+IAM role trust policies and IAM role permission policies serve different purposes.
+
+The trust policy answers:
+
+> Who may assume this role?
+
+The permission policy answers:
+
+> What may the assumed role do?
+
+For example, GitHub OIDC trust conditions determine whether an approved `pavedpath-sample-api` workflow may assume the application CI role.
+
+The policies attached to that role determine whether the resulting temporary credentials may perform approved operations against the PavedPath Amazon ECR repository.
+
+Both layers must follow the principle of least privilege.
+
+Conceptually:
+
+```text
+GitHub Workflow Identity
+          |
+          v
+     Trust Policy
+          |
+    "May this identity
+     assume the role?"
+          |
+          v
+       IAM Role
+          |
+          v
+   Permission Policy
+          |
+     "What may this
+       role do?"
+          |
+          v
+    AWS Resources
+```
+
+Successful authentication through GitHub OIDC does not automatically grant broad access to AWS. Authorization remains constrained by the policies attached to the assumed IAM role.
 
 ---
 
@@ -142,9 +234,11 @@ The exact permissions will be developed as the infrastructure implementation evo
 
 The objective is least privilege rather than permanent broad administrative access.
 
-Where practical, planning and application permissions may be separated.
+PavedPath will target separate authorization boundaries for Terraform planning and Terraform application.
 
-For example:
+Pull request workflows should not automatically receive the same infrastructure modification permissions as approved apply workflows.
+
+Conceptually:
 
 ```text
 Pull Request
@@ -167,6 +261,8 @@ Terraform Apply Role
           |
           +---- Modify approved infrastructure
 ```
+
+If implementation constraints require temporarily sharing a role, that exception must be documented and revisited.
 
 The final implementation will balance least privilege with maintainability.
 
@@ -213,7 +309,7 @@ The workflow obtains credentials when required and they expire automatically.
 
 ## GitHub Actions Requirements
 
-GitHub Actions workflows using OIDC will require permission to request an identity token.
+GitHub Actions workflows using OIDC require permission to request an identity token.
 
 Conceptually:
 
@@ -223,7 +319,13 @@ permissions:
   contents: read
 ```
 
-The workflow will then assume an approved AWS IAM role.
+The `id-token: write` permission allows the workflow to request an OIDC token.
+
+It does not itself grant permission to modify AWS resources.
+
+AWS authorization is determined by the IAM role successfully assumed by the workflow and the policies attached to that role.
+
+The workflow will assume an approved AWS IAM role using its GitHub OIDC identity.
 
 No AWS secret access key is required in the repository for this authentication flow.
 
@@ -253,6 +355,8 @@ Separate roles allow infrastructure and application workflows to operate with di
 
 Credential expiration limits the lifetime of issued AWS credentials.
 
+Separating trust policies from permission policies allows PavedPath to independently control which workflows may authenticate and what those authenticated workflows may do.
+
 ### Negative
 
 OIDC federation requires additional initial IAM configuration.
@@ -261,7 +365,9 @@ Trust policies must be designed carefully.
 
 An overly broad trust policy could allow unintended GitHub workflows to assume an AWS role.
 
-For this reason, trust relationships must be reviewed with the same care as IAM permission policies.
+Repository, branch, environment, and subject-claim changes may require corresponding updates to IAM trust policies.
+
+For these reasons, trust relationships must be reviewed with the same care as IAM permission policies.
 
 ---
 
@@ -290,22 +396,23 @@ This may be appropriate for some future workloads, but it introduces runner infr
 ## Resulting Authentication Model
 
 ```text
-                  GitHub
-
-       +---------------------------+
-       |                           |
-       v                           v
-Infrastructure Actions      Application Actions
-       |                           |
-       | OIDC                      | OIDC
-       v                           v
-Infrastructure Role         Application CI Role
-       |                           |
-       v                           v
-Terraform / AWS                   ECR
+                         GitHub
+              +---------------------------+
+              |                           |
+              v                           v
+    Infrastructure Actions        Application Actions
+              |                           |
+              | OIDC                      | OIDC
+              v                           v
+    Infrastructure Role           Application CI Role
+              |                           |
+              v                           v
+       Terraform / AWS                   ECR
 ```
 
-The two workflows authenticate through the same federation mechanism but receive different AWS permissions.
+The two workflow types authenticate through the same federation mechanism but receive different AWS permissions.
+
+Within the infrastructure workflow, PavedPath will target further separation between planning and application authorization where practical.
 
 ---
 
@@ -315,11 +422,15 @@ If a GitHub workflow cannot authenticate to AWS, engineers should investigate:
 
 1. the GitHub workflow's OIDC permissions,
 2. the IAM role ARN being requested,
-3. the IAM trust policy,
-4. repository and branch trust conditions,
-5. AWS CloudTrail records where applicable.
+3. the configured OIDC provider and audience,
+4. the IAM role trust policy,
+5. repository, branch, environment, and subject conditions,
+6. the role's attached permission policies if authentication succeeds but authorization fails,
+7. AWS CloudTrail records where applicable.
 
 Static AWS credentials should not be introduced as a workaround for an OIDC configuration problem.
+
+Break-glass procedures, if required in the future, must be explicitly documented and must not silently replace the normal OIDC authentication path.
 
 ---
 
@@ -330,4 +441,5 @@ This decision should be revisited if:
 - GitHub's workload identity model materially changes,
 - AWS introduces a more appropriate federation mechanism,
 - workflows move to a different CI platform,
-- self-hosted runner architecture changes the authentication requirements.
+- self-hosted runner architecture changes the authentication requirements,
+- the platform's authorization boundaries materially change.
